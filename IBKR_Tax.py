@@ -1,89 +1,141 @@
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
 # %% [markdown]
 # # IBKR Tax
 
-# %%
-import pandas as pd
-
-
-# %%
-from currency_converter import CurrencyConverter
-c = CurrencyConverter(fallback_on_missing_rate=True)
-
-# %% [markdown]
-# # Read Data
 # %% [markdown]
 # Requirements:
 # - English activity statement
 # - Year of activity statement 2020 and older
-
+# - All Options, Futures, CFDs closed before year end
+# - Only single short put and short call (Line 25 Losses from the disposal of worthless assets as per section 20(1) of the Income Tax Act not implemented)
+# - Manual credit of Withholding tax
+# - No classification of REITs as investment fund required
 # %%
-myfile = "MY_ACTIVITY_STATEMENT.csv"
+import pandas as pd
+
+from IPython.display import display
+
+from utils import *
 
 # %% [markdown]
-# https://stackoverflow.com/questions/27020216/import-csv-with-different-number-of-columns-per-row-using-pandas/57824142#57824142
-
+# # Read Data
 # %%
-### Loop the data lines
-with open(myfile, 'r') as temp_f:
-    # get No of columns in each line
-    col_count = [ len(l.split(",")) for l in temp_f.readlines() ]
 
-### Generate column names  (names will be 0, 1, 2, ..., maximum columns - 1)
-column_names = [i for i in range(0, max(col_count))]
+myFile = "MY_ACTIVITY_STATEMENT.csv"
+myFile = "Data/ibkr/main_2020.csv"
 
-### Read csv
-df = pd.read_csv(myfile, header=None, delimiter=",", names=column_names)
+df = parse_activityStatement(myFile)
 
 # %% [markdown]
 # # Trades
+# %%
+
+tradesStatement = get_trades(df)
+
+PL_Trades = tradesStatement.pl
+PL_TradesDet = tradesStatement.plDet
+
+df_trades = tradesStatement.trades
+df_futures = tradesStatement.futures
+df_options = tradesStatement.options
+df_cfd = tradesStatement.cfd
+
+display(PL_TradesDet, PL_Trades)
+
+# %% [markdown]
+# # Dividend
+# %%
+
+WithholdingTax, Dividends = get_dividends(df)
+
+display(WithholdingTax, Dividends)
+
+# %% [markdown]
+# # Interest
+# %%
+
+Interest = get_interest(df)
+
+Interest
+
+# %% [markdown]
+# # Futures / Option / CFD Profit and Loss
+# %% [markdown]
+# - Only applies if every position is closed and opened during the year (i.e. Options)
+# %%
+
+multiplier = 1
+Futures, FuturesDet = getTradesPnl(df_futures.copy(), multiplier)
+
+display(Futures, FuturesDet)
 
 # %%
-df_trades = df[df.iloc[:,0] == "Trades"].dropna(how='all', axis=1)
-df_trades, df_trades.columns = df_trades.iloc[1:] , df_trades.iloc[0]
-df_trades.columns.name = None
+multiplier = 100
+Options, OptionsDet = getTradesPnl(df_options.copy(), multiplier)
+
+display(Options, OptionsDet)
 
 
 # %%
-# obtain asset type
-try:
-    df_trades[['Asset','Category']] = df_trades["Asset Category"].str.split("-", expand=True).copy()
-except:
-    df_trades["Asset"] = df_trades["Asset Category"]
+multiplier = 1
+Cfd, CfdDet = getTradesPnl(df_cfd.copy(), multiplier)
 
-# remove subheader
-df_trades = df_trades[(df_trades["Realized P/L"]!="Realized P/L") & ~(df_trades["Header"].str.contains("SubTotal|Total"))].copy()
+display(Cfd, CfdDet)
 
-# convert dtypes
-df_trades["Realized P/L"] = df_trades["Realized P/L"].astype(float)
+# %% [markdown]
+# # Anlage KAP
 
-# remove empty rows
-df_trades = df_trades[df_trades["Realized P/L"].notnull()] #df_trades["Realized P/L"]!=0) & 
+activityStatement = namedtuple('statement', ['pl', 'plDet', 'options', 'optionsDet', 'dividends', 'interest'])
 
- 
-# convert to datetime
-df_trades["Date/Time"] = pd.to_datetime(df_trades["Date/Time"],  infer_datetime_format=True)
+KAP = get_kap(activityStatement(PL_Trades, PL_TradesDet, Options, OptionsDet, Dividends, Interest))
 
-df_trades = df_trades.reset_index(drop=True)
+KAP
 
+# %% [markdown]
+# # Results
+
+# %% Add sum row
+WithholdingTax = addSumRow(WithholdingTax)
+Dividends = addSumRow(Dividends)
+Interest = addSumRow(Interest)
+PL_Trades = addSumRow(PL_Trades)
+PL_TradesDet = addSumRow(PL_TradesDet)
+OptionsDet = addSumRow(OptionsDet) if not OptionsDet.empty else OptionsDet
+FuturesDet = addSumRow(FuturesDet) if not FuturesDet.empty else FuturesDet
+CfdDet = addSumRow(CfdDet) if not CfdDet.empty else CfdDet
+# %%
+Interest
 
 # %%
-# convert to EUR using ECB rates
-df_trades["P/L [€]"] = df_trades.apply(lambda row: c.convert(
-    row["Realized P/L"] , row.Currency, date=row["Date/Time"]), axis=1)
-df_trades["P [€]"] = df_trades["P/L [€]"].apply(lambda row: row if row > 0 else 0)
-df_trades["L [€]"] = df_trades["P/L [€]"].apply(lambda row: row if row < 0 else 0)
-
+WithholdingTax if not WithholdingTax.empty else "No Withholding Tax"
 
 # %%
-PL_TradesDet = df_trades.groupby(["Currency", "Asset"]).sum()
-PL_Trades = df_trades.groupby(["Asset"]).sum()
+Dividends
 
+# %%
+PL_Trades
+
+# %%
+PL_TradesDet
+
+# %% [markdown]
+# # Detailed Results
+
+# %%
+display(Options, OptionsDet)
+
+# %%
+display(Futures, FuturesDet)
+
+# %%
+display(Cfd, CfdDet)
+
+# %% [markdown]
+# ---
 # %% [markdown]
 # # P/L Forex
 # %% [markdown]
-# ## Not fully tested
+# ## Experimental stuff 
+# Not fully tested
 # %% [markdown]
 # ### Only applies if every position is closed and opened during the year (i.e. Options)
 # %% [markdown]
@@ -122,87 +174,3 @@ df_forex.loc[:,:] = df_forex.loc[:,:].apply(pd.to_numeric, errors = 'ignore')
 df_forex.loc['Column_Total'] = df_forex.sum(numeric_only=True, axis=0)
 PL_Forex = df_forex
 PL_Forex
-
-# %% [markdown]
-# # Dividend
-
-# %%
-def process_df(df):
-    # set first row as header
-    df, df.columns = df.iloc[1:] , df.iloc[0]
-    
-    # remove rows with sum
-    df = df[~df.Currency.str.contains("Total")]
-    
-    # conver dtypes
-    df["Amount"] = df["Amount"].astype(float)
-    
-    # convert to datetime
-    df["Date"] = pd.to_datetime(df["Date"],  infer_datetime_format=True)
-    
-    # convert to EUR using ECB rates
-    df["Amount [€]"] = df.apply(lambda row: c.convert(row["Amount"] , row["Currency"], date=row["Date"]), axis=1)
-    
-    # label CFD dividens
-    df["Description"] = df["Description"].str.replace(" ","")
-    df[['Symbol','TrashCol']] = df["Description"].str.split("(", n=1, expand=True).copy()
-    df[['Country','TrashCol']] = df["TrashCol"].str.split(")", n=1, expand=True).copy()
-    df["Country"] = df["Country"].str.extract(r'(^\D+)').fillna("CFD")
-    df["Asset"] = "Stocks"
-    df.loc[df.Symbol.str.endswith("n"), "Asset"] = "CFDs" 
-    
-    # remove index from column names
-    df.columns.name = None
-    df.reset_index(drop=True)
-    
-    return df
-
-
-# %%
-df_div = df[df.iloc[:,0] == "Dividends"].dropna(how='all', axis=1)
-df_wtax = df[df.iloc[:,0] == "Withholding Tax"].dropna(how='all', axis=1)
-df_871 = df[df.iloc[:,0] == "871(m) Withholding"].dropna(how='all', axis=1)
-
-
-# %%
-df_div = process_df(df_div)
-df_wtax = process_df(df_wtax) if not df_wtax.empty else df_wtax
-
-
-# %%
-df_871 = process_df(df_871) if not df_871.empty else df_871
-df_871["Asset"] = "CFDs"
-df_wtax = df_wtax.append(df_871)
-
-
-# %%
-WithholdingTax = df_wtax.groupby(["Currency", "Asset", "Country"]).sum() if not df_871.empty else df_871
-Dividends = df_div.groupby(["Currency", "Asset", "Country"]).sum()
-
-# %% [markdown]
-# # Results
-
-# %%
-WithholdingTax if not df_871.empty else "No Withholding Tax"
-
-
-# %%
-Dividends
-
-
-# %%
-PL_Trades
-
-
-# %%
-PL_TradesDet
-
-
-# %%
-
-
-
-# %%
-
-
-
